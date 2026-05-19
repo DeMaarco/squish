@@ -55,6 +55,12 @@ cd squish
 npm install
 ```
 
+3. Ejecutar en desarrollo:
+
+```bash
+npm run tauri dev
+```
+
 ## Uso
 
 ### Modo desarrollo

@@ -1,9 +1,11 @@
 mod compression;
 
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FileInfo {
     path: String,
     name: String,
@@ -17,6 +19,7 @@ fn get_file_info(path: String) -> Result<FileInfo, String> {
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     let name = path_obj
         .file_name()
+        .or_else(|| path_obj.components().next_back().map(|c| c.as_os_str()))
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
@@ -44,18 +47,18 @@ fn get_file_info(path: String) -> Result<FileInfo, String> {
 async fn compress_files(
     app: AppHandle,
     input_paths: Vec<String>,
-    format: String,
-    level: String,
     output: String,
 ) -> Result<(), String> {
     let handle = app.clone();
     let output_clone = output.clone();
-    let (original, compressed) = tokio::spawn(async move {
-        compression::compress(handle, input_paths, format, level, output_clone).await
+    let started_at = Instant::now();
+    let (original, compressed) = tokio::task::spawn_blocking(move || {
+        compression::compress(handle, input_paths, output_clone)
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
     app.emit(
         "compress://done",
@@ -63,6 +66,7 @@ async fn compress_files(
             "original_bytes": original,
             "compressed_bytes": compressed,
             "output_path": output,
+            "elapsed_ms": elapsed_ms,
         }),
     )
     .map_err(|e| e.to_string())?;

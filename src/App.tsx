@@ -7,7 +7,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import {
   Archive,
-  ChevronDown,
   File,
   Folder,
   FolderOpen,
@@ -16,9 +15,8 @@ import {
   Plus,
   Square,
   X,
-  Zap,
 } from "lucide-react";
-import { useStore, type FileInfo } from "./store";
+import { useStore, type CompressionProgress, type FileInfo } from "./store";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -28,13 +26,30 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
+function getParentDir(path: string): string {
+  const separator = path.includes("/") ? "/" : "\\";
+  const index = path.lastIndexOf(separator);
+  return index > 0 ? path.substring(0, index) : ".";
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function progressPercent(progress: CompressionProgress): number {
+  if (Number.isFinite(progress.percent)) return Math.min(100, Math.max(0, progress.percent));
+  if (progress.totalBytes > 0) {
+    return Math.min(100, Math.max(0, (progress.processedBytes / progress.totalBytes) * 100));
+  }
+  return 0;
+}
+
 const appWindow = getCurrentWindow();
 
 export default function App() {
   const {
     files,
-    format,
-    level,
     isCompressing,
     progress,
     result,
@@ -42,8 +57,6 @@ export default function App() {
     addFiles,
     removeFile,
     clearFiles,
-    setFormat,
-    setLevel,
     setCompressing,
     setProgress,
     setResult,
@@ -56,16 +69,24 @@ export default function App() {
   const fetchAndAdd = useCallback(async (paths: string[]) => {
     reset();
     const newFiles: FileInfo[] = [];
+    let failed = 0;
     for (const path of paths) {
       try {
         const info = (await invoke("get_file_info", { path })) as FileInfo;
         newFiles.push(info);
       } catch {
-        // skip
+        failed += 1;
       }
     }
     if (newFiles.length > 0) addFiles(newFiles);
-  }, [addFiles, reset]);
+    if (failed > 0) {
+      setError(
+        failed === 1
+          ? "No se pudo leer un elemento seleccionado."
+          : `No se pudieron leer ${failed} elementos seleccionados.`,
+      );
+    }
+  }, [addFiles, reset, setError]);
 
   useEffect(() => {
     const unlistenDrag = getCurrentWebview().onDragDropEvent((event) => {
@@ -81,12 +102,22 @@ export default function App() {
     });
 
     const unlistenProgress = listen("compress://progress", (event) => {
-      setProgress(event.payload as { current: number; total: number });
+      setProgress(event.payload as CompressionProgress);
     });
 
     const unlistenDone = listen("compress://done", (event) => {
-      const p = event.payload as { original_bytes: number; compressed_bytes: number; output_path: string };
-      setResult({ originalBytes: p.original_bytes, compressedBytes: p.compressed_bytes, outputPath: p.output_path });
+      const p = event.payload as {
+        original_bytes: number;
+        compressed_bytes: number;
+        output_path: string;
+        elapsed_ms: number;
+      };
+      setResult({
+        originalBytes: p.original_bytes,
+        compressedBytes: p.compressed_bytes,
+        outputPath: p.output_path,
+        elapsedMs: p.elapsed_ms,
+      });
       setCompressing(false);
       setProgress(null);
     });
@@ -128,18 +159,15 @@ export default function App() {
     reset();
     setCompressing(true);
 
-    const firstPath = files[0].path;
-    const separator = firstPath.includes("/") ? "/" : "\\";
-    const dir = firstPath.substring(0, firstPath.lastIndexOf(separator));
+    const dir = getParentDir(files[0].path);
+    const separator = files[0].path.includes("/") ? "/" : "\\";
     const timestamp = Date.now();
-    const ext = format === "zstd" ? "tar.zst" : format;
+    const ext = "7z";
     const output = `${dir}${separator}squish_${timestamp}.${ext}`;
 
     try {
       await invoke("compress_files", {
         inputPaths: files.map((f) => f.path),
-        format,
-        level,
         output,
       });
     } catch (e) {
@@ -149,11 +177,8 @@ export default function App() {
   };
 
   const openOutputFolder = () => {
-    if (files.length === 0) return;
-    const firstPath = files[0].path;
-    const separator = firstPath.includes("/") ? "/" : "\\";
-    const dir = firstPath.substring(0, firstPath.lastIndexOf(separator));
-    revealItemInDir(dir);
+    if (!result) return;
+    revealItemInDir(result.outputPath);
   };
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
@@ -286,23 +311,28 @@ export default function App() {
         )}
 
         {progress && (
-          <div className="shrink-0">
-            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1.5">
-              <span>Comprimiendo...</span>
-              <span>
-                {progress.current} / {progress.total}
-                <span className="text-zinc-600 ml-1.5">
-                  ({Math.round((progress.current / progress.total) * 100)}%)
-                </span>
+          <div className="shrink-0 bg-zinc-900/70 border border-zinc-800 rounded-lg p-3">
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
+              <span className="truncate pr-4">{progress.fileName}</span>
+              <span className="text-zinc-300 tabular-nums">
+                {Math.round(progressPercent(progress))}%
               </span>
             </div>
-            <div className="h-1.5 bg-zinc-900 rounded-full overflow-hidden">
+            <div className="h-2.5 bg-zinc-950 rounded-full overflow-hidden ring-1 ring-zinc-800">
               <div
-                className="h-full bg-violet-500 rounded-full transition-all duration-300 ease-out"
+                className="h-full bg-gradient-to-r from-violet-500 via-fuchsia-500 to-emerald-400 rounded-full transition-[width] duration-500 ease-out"
                 style={{
-                  width: `${(progress.current / progress.total) * 100}%`,
+                  width: `${progressPercent(progress)}%`,
                 }}
               />
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-zinc-600 mt-2">
+              <span>
+                {formatBytes(progress.processedBytes)} / {formatBytes(progress.totalBytes)}
+              </span>
+              <span>
+                {progress.current} / {progress.total}
+              </span>
             </div>
           </div>
         )}
@@ -323,6 +353,10 @@ export default function App() {
                   <span className="text-zinc-500">Reducción</span>
                   <span className="font-medium text-emerald-400">{reduction}%</span>
                 </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-zinc-500">Tiempo</span>
+                  <span className="font-medium">{formatElapsed(result.elapsedMs)}</span>
+                </div>
               </>
             )}
             <button
@@ -342,42 +376,10 @@ export default function App() {
         )}
 
         <div className="flex items-center gap-2.5 shrink-0">
-          <div className="relative">
-            <select
-              value={format}
-              onChange={(e) =>
-                setFormat(e.target.value as "7z" | "zip" | "zstd")
-              }
-              disabled={isCompressing}
-              className="appearance-none bg-zinc-900 text-sm rounded-lg pl-3 pr-8 py-2 border border-zinc-800 focus:outline-none focus:border-violet-500 disabled:opacity-50 transition-colors"
-            >
-              <option value="7z">7z (LZMA2)</option>
-              <option value="zip">ZIP</option>
-              <option value="zstd">ZSTD</option>
-            </select>
-            <ChevronDown className="w-3.5 h-3.5 text-zinc-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          </div>
-
-          <div className="relative">
-            <select
-              value={level}
-              onChange={(e) =>
-                setLevel(e.target.value as "fast" | "normal" | "max")
-              }
-              disabled={isCompressing}
-              className="appearance-none bg-zinc-900 text-sm rounded-lg pl-3 pr-8 py-2 border border-zinc-800 focus:outline-none focus:border-violet-500 disabled:opacity-50 transition-colors"
-            >
-              <option value="fast">Fast</option>
-              <option value="normal">Normal</option>
-              <option value="max">Max</option>
-            </select>
-            <Zap className="w-3.5 h-3.5 text-zinc-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          </div>
-
           <button
             onClick={handleCompress}
             disabled={files.length === 0 || isCompressing}
-            className="flex-1 bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium rounded-lg py-2 transition-colors"
+            className="w-full bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium rounded-lg py-2 transition-colors"
           >
             {isCompressing ? "Comprimiendo..." : "Comprimir"}
           </button>

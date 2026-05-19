@@ -7,30 +7,33 @@ export interface FileInfo {
   isDir: boolean;
 }
 
+export interface CompressionProgress {
+  current: number;
+  total: number;
+  processedBytes: number;
+  totalBytes: number;
+  percent: number;
+  fileName: string;
+}
+
 interface AppState {
   files: FileInfo[];
-  format: "7z" | "zip" | "zstd";
-  level: "fast" | "normal" | "max";
   isCompressing: boolean;
-  progress: { current: number; total: number } | null;
-  result: { originalBytes: number; compressedBytes: number; outputPath: string } | null;
+  progress: CompressionProgress | null;
+  result: { originalBytes: number; compressedBytes: number; outputPath: string; elapsedMs: number } | null;
   error: string | null;
   addFiles: (files: FileInfo[]) => void;
   removeFile: (path: string) => void;
   clearFiles: () => void;
-  setFormat: (format: "7z" | "zip" | "zstd") => void;
-  setLevel: (level: "fast" | "normal" | "max") => void;
   setCompressing: (value: boolean) => void;
-  setProgress: (progress: { current: number; total: number } | null) => void;
-  setResult: (result: { originalBytes: number; compressedBytes: number; outputPath: string } | null) => void;
+  setProgress: (progress: CompressionProgress | null) => void;
+  setResult: (result: { originalBytes: number; compressedBytes: number; outputPath: string; elapsedMs: number } | null) => void;
   setError: (error: string | null) => void;
   reset: () => void;
 }
 
 export const useStore = create<AppState>((set) => ({
   files: [],
-  format: "zip",
-  level: "normal",
   isCompressing: false,
   progress: null,
   result: null,
@@ -46,8 +49,6 @@ export const useStore = create<AppState>((set) => ({
       files: state.files.filter((f) => f.path !== path),
     })),
   clearFiles: () => set({ files: [], result: null, progress: null, error: null }),
-  setFormat: (format) => set({ format }),
-  setLevel: (level) => set({ level }),
   setCompressing: (isCompressing) => set({ isCompressing }),
   setProgress: (progress) => set({ progress }),
   setResult: (result) => set({ result }),
